@@ -1,0 +1,127 @@
+services:
+  # ============================================================================
+  # 1. CPU-friendly Serving Engine: Ollama
+  # ============================================================================
+  ollama-engine:
+    image: ollama/ollama:latest
+    container_name: llm-serving-ollama-cpu
+    restart: unless-stopped
+    volumes:
+      - ${OLLAMA_DATA_DIR:-./ollama_data}:/root/.ollama
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_NUM_PARALLEL=2
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:11434/api/tags || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - llm-network
+
+  # ============================================================================
+  # 2. Unified API Gateway: LiteLLM Proxy
+  # ============================================================================
+  litellm-gateway:
+    image: ghcr.io/berriai/litellm:main-v1.51.0
+    container_name: llm-serving-gateway-cpu
+    restart: unless-stopped
+    volumes:
+      - ./config/litellm/config.yaml:/app/config.yaml:ro
+    ports:
+      - "${LITELLM_PORT:-4000}:4000"
+    environment:
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-sk-master-llm-serving-secret-key}
+      - STORE_MODEL_IN_DB=False
+    command: >
+      --config /app/config.yaml
+      --port 4000
+      --num_workers 2
+    depends_on:
+      ollama-engine:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:4000/health/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - llm-network
+
+  # ============================================================================
+  # 3. Observability: Prometheus TSDB
+  # ============================================================================
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: llm-serving-prometheus-cpu
+    restart: unless-stopped
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    networks:
+      - llm-network
+
+  # ============================================================================
+  # 4. Observability: Grafana Dashboards
+  # ============================================================================
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: llm-serving-grafana-cpu
+    restart: unless-stopped
+    volumes:
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - llm-network
+
+  # ============================================================================
+  # 5. Observability: cAdvisor
+  # ============================================================================
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: llm-serving-cadvisor-cpu
+    restart: unless-stopped
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    ports:
+      - "${CADVISOR_PORT:-8080}:8080"
+    privileged: true
+    devices:
+      - /dev/kmsg
+    networks:
+      - llm-network
+
+networks:
+  llm-network:
+    driver: bridge
+    name: llm-serving-network-cpu
+
+volumes:
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local

@@ -1,0 +1,66 @@
+# ==============================================================================
+# LiteLLM Proxy Configuration - Unified Routing & Fallback Architecture
+# ==============================================================================
+
+model_list:
+  # ----------------------------------------------------------------------------
+  # 1. Primary High-Performance Model (vLLM Engine)
+  # ----------------------------------------------------------------------------
+  - model_name: default-llm
+    litellm_params:
+      model: openai/Qwen/Qwen2.5-7B-Instruct-AWQ
+      api_base: http://vllm-engine:8000/v1
+      api_key: "none"
+      rpm: 1000 # Rate limit per minute
+      timeout: 120 # Timeout seconds
+
+  - model_name: vllm-primary
+    litellm_params:
+      model: openai/Qwen/Qwen2.5-7B-Instruct-AWQ
+      api_base: http://vllm-engine:8000/v1
+      api_key: "none"
+      rpm: 1000
+      timeout: 120
+
+  # ----------------------------------------------------------------------------
+  # 2. Secondary / Local / Fallback Model (Ollama Engine)
+  # ----------------------------------------------------------------------------
+  - model_name: ollama-fallback
+    litellm_params:
+      model: ollama/llama3.2:3b
+      api_base: http://ollama-engine:11434
+      timeout: 120
+
+  - model_name: llama3.2
+    litellm_params:
+      model: ollama/llama3.2:3b
+      api_base: http://ollama-engine:11434
+      timeout: 120
+
+# ------------------------------------------------------------------------------
+# Smart Routing & High Availability Fallback Logic
+# Nếu vLLM bị OOM, quá tải hoặc down, tự động fallback sang Ollama
+# ------------------------------------------------------------------------------
+router_settings:
+  routing_strategy: "least-busy" # Chiến lược định tuyến: least-busy hoặc latency-based
+  model_group_alias:
+    "production-chat": "default-llm"
+  fallbacks:
+    - default-llm: ["ollama-fallback"]
+    - vllm-primary: ["ollama-fallback"]
+  num_retries: 2
+  retry_after: 1
+  allowed_fails: 3
+  cooldown_time: 30
+
+# ------------------------------------------------------------------------------
+# General Settings & Telemetry
+# ------------------------------------------------------------------------------
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  alerting: []
+  telemetry: False
+
+litellm_settings:
+  success_callback: ["prometheus"]
+  failure_callback: ["prometheus"]

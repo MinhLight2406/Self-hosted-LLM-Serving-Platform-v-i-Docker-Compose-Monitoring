@@ -1,0 +1,196 @@
+services:
+  # ============================================================================
+  # 1. High-Throughput Serving Engine: vLLM
+  # ============================================================================
+  vllm-engine:
+    image: vllm/vllm-openai:v0.6.3.post1
+    container_name: llm-serving-vllm
+    restart: unless-stopped
+    ipc: host # Cực kỳ quan trọng: chia sẻ shared memory cho PyTorch & NCCL tránh crash
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
+      - NCCL_DEBUG=INFO
+    volumes:
+      - ${HF_CACHE_DIR:-./huggingface_cache}:/root/.cache/huggingface
+    ports:
+      - "${VLLM_PORT:-8000}:8000"
+    command: >
+      --model ${VLLM_MODEL:-Qwen/Qwen2.5-7B-Instruct-AWQ}
+      --gpu-memory-utilization ${VLLM_GPU_MEMORY_UTILIZATION:-0.90}
+      --max-model-len ${VLLM_MAX_MODEL_LEN:-4096}
+      --tensor-parallel-size ${VLLM_TENSOR_PARALLEL_SIZE:-1}
+      --port 8000
+      --host 0.0.0.0
+      --trust-remote-code
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/v1/models || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - llm-network
+
+  # ============================================================================
+  # 2. Lightweight / Multi-Model Engine: Ollama
+  # ============================================================================
+  ollama-engine:
+    image: ollama/ollama:latest
+    container_name: llm-serving-ollama
+    restart: unless-stopped
+    volumes:
+      - ${OLLAMA_DATA_DIR:-./ollama_data}:/root/.ollama
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h
+      - OLLAMA_HOST=0.0.0.0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:11434/api/tags || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - llm-network
+
+  # ============================================================================
+  # 3. Unified API Gateway & Smart Router: LiteLLM Proxy
+  # ============================================================================
+  litellm-gateway:
+    image: ghcr.io/berriai/litellm:main-v1.51.0
+    container_name: llm-serving-gateway
+    restart: unless-stopped
+    volumes:
+      - ./config/litellm/config.yaml:/app/config.yaml:ro
+    ports:
+      - "${LITELLM_PORT:-4000}:4000"
+    environment:
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-sk-master-llm-serving-secret-key}
+      - STORE_MODEL_IN_DB=False
+    command: >
+      --config /app/config.yaml
+      --port 4000
+      --num_workers 4
+    depends_on:
+      vllm-engine:
+        condition: service_healthy
+      ollama-engine:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:4000/health/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - llm-network
+
+  # ============================================================================
+  # 4. Observability: Prometheus TSDB
+  # ============================================================================
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: llm-serving-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    networks:
+      - llm-network
+
+  # ============================================================================
+  # 5. Observability: Grafana Visual Dashboards
+  # ============================================================================
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: llm-serving-grafana
+    restart: unless-stopped
+    volumes:
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/llm-serving-overview.json
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - llm-network
+
+  # ============================================================================
+  # 6. Observability: NVIDIA DCGM Exporter (GPU Telemetry)
+  # ============================================================================
+  dcgm-exporter:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:3.3.5-3.4.0-ubuntu22.04
+    container_name: llm-serving-dcgm-exporter
+    restart: unless-stopped
+    ports:
+      - "${DCGM_EXPORTER_PORT:-9400}:9400"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - llm-network
+
+  # ============================================================================
+  # 7. Observability: cAdvisor (Container Resource Usage)
+  # ============================================================================
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: llm-serving-cadvisor
+    restart: unless-stopped
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    ports:
+      - "${CADVISOR_PORT:-8080}:8080"
+    privileged: true
+    devices:
+      - /dev/kmsg
+    networks:
+      - llm-network
+
+networks:
+  llm-network:
+    driver: bridge
+    name: llm-serving-network
+
+volumes:
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
