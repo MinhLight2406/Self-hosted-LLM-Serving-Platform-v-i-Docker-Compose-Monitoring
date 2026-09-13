@@ -2,7 +2,8 @@
 """
 Test client to verify LLM inference via LiteLLM Gateway.
 Supports both non-streaming and streaming responses.
-Pure standard library implementation.
+Pure standard library implementation with zero third-party dependencies.
+Secured: Automatically resolves API key from environment or .env file without hardcoding.
 """
 
 import os
@@ -13,14 +14,48 @@ import argparse
 import urllib.request
 import urllib.error
 
+def load_env_file():
+    """Tự động đọc file .env ở thư mục gốc nếu biến môi trường chưa được set"""
+    env_paths = [
+        os.path.join(os.getcwd(), ".env"),
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+    ]
+    for p in env_paths:
+        if os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, v = line.split("=", 1)
+                            k = k.strip()
+                            v = v.strip().strip("'\"")
+                            if k not in os.environ:
+                                os.environ[k] = v
+            except Exception:
+                pass
+            break
+
+# Nạp .env an toàn
+load_env_file()
+
 DEFAULT_GATEWAY_URL = os.environ.get("LITELLM_GATEWAY_URL", "http://localhost:4000/v1/chat/completions")
-DEFAULT_API_KEY = os.environ.get("LITELLM_MASTER_KEY", "sk-master-llm-serving-secret-key")
+DEFAULT_API_KEY = os.environ.get("LITELLM_MASTER_KEY", "")
 DEFAULT_MODEL = os.environ.get("TARGET_MODEL", "default-llm")
+
+def mask_secret(secret):
+    if not secret:
+        return "<none>"
+    if len(secret) <= 8:
+        return "***"
+    return secret[:4] + "..." + secret[-4:]
 
 def test_non_streaming(url, api_key, model, prompt):
     print("\n" + "=" * 60)
     print(f"[*] Testing Non-Streaming Inference on '{model}'")
-    print(f"[*] Prompt: \"{prompt}\"")
+    print(f"[*] Gateway URL : {url}")
+    print(f"[*] Auth Token  : {mask_secret(api_key)}")
+    print(f"[*] Prompt      : \"{prompt}\"")
     print("=" * 60)
 
     payload = {
@@ -70,7 +105,9 @@ def test_non_streaming(url, api_key, model, prompt):
 def test_streaming(url, api_key, model, prompt):
     print("\n" + "=" * 60)
     print(f"[*] Testing Streaming Inference on '{model}' (Measuring TTFT)")
-    print(f"[*] Prompt: \"{prompt}\"")
+    print(f"[*] Gateway URL : {url}")
+    print(f"[*] Auth Token  : {mask_secret(api_key)}")
+    print(f"[*] Prompt      : \"{prompt}\"")
     print("=" * 60)
 
     payload = {
@@ -142,11 +179,14 @@ def test_streaming(url, api_key, model, prompt):
 def main():
     parser = argparse.ArgumentParser(description="Test LLM Serving Endpoint")
     parser.add_argument("--url", default=DEFAULT_GATEWAY_URL, help="Gateway URL")
-    parser.add_argument("--key", default=DEFAULT_API_KEY, help="API Key")
+    parser.add_argument("--key", default=DEFAULT_API_KEY, help="API Key (default: reads from .env or LITELLM_MASTER_KEY)")
     parser.add_argument("--model", default=DEFAULT_MODEL, help="Model name")
     parser.add_argument("--prompt", default="Explain the difference between Prefill and Decode phase in LLM inference in 2 short bullet points.", help="Prompt text")
     parser.add_argument("--stream", action="store_true", help="Run streaming test")
     args = parser.parse_args()
+
+    if not args.key:
+        print("[!] Canh bao: Khong tim thay API Key! Vui long cung cap --key hoac dat LITELLM_MASTER_KEY trong file .env.")
 
     if args.stream:
         test_streaming(args.url, args.key, args.model, args.prompt)

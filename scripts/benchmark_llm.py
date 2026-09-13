@@ -8,7 +8,8 @@ Measures:
   - Token Generation Throughput (tokens/second)
   - Success / Error Rate under concurrency
 
-Runs using Python standard library (no pip requirements needed).
+Runs using Python standard library (no extra pip packages needed).
+Secured: Dynamically loads master key from environment or .env without hardcoding plain-text secrets.
 """
 
 import os
@@ -22,6 +23,30 @@ import urllib.request
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+def load_env_file():
+    """Tự động đọc file .env ở thư mục gốc nếu biến môi trường chưa được set"""
+    env_paths = [
+        os.path.join(os.getcwd(), ".env"),
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+    ]
+    for p in env_paths:
+        if os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, v = line.split("=", 1)
+                            k = k.strip()
+                            v = v.strip().strip("'\"")
+                            if k not in os.environ:
+                                os.environ[k] = v
+            except Exception:
+                pass
+            break
+
+load_env_file()
+
 PROMPT_BANK = [
     "What is the mathematical formulation of self-attention in Transformers?",
     "Explain how continuous batching improves GPU utilization in LLM serving.",
@@ -29,6 +54,13 @@ PROMPT_BANK = [
     "Why is LLM decoding memory-bandwidth bound rather than compute bound?",
     "How does 4-bit AWQ quantization maintain perplexity while reducing VRAM footprint?",
 ]
+
+def mask_secret(secret):
+    if not secret:
+        return "<none>"
+    if len(secret) <= 8:
+        return "***"
+    return secret[:4] + "..." + secret[-4:]
 
 def percentile(data, p):
     if not data:
@@ -115,6 +147,7 @@ def run_benchmark(url, api_key, model, total_requests, concurrency, max_tokens):
     print("=" * 70)
     print(f"Target URL       : {url}")
     print(f"Target Model     : {model}")
+    print(f"Auth Token       : {mask_secret(api_key)}")
     print(f"Total Requests   : {total_requests}")
     print(f"Concurrency      : {concurrency}")
     print(f"Max Output Tokens: {max_tokens}")
@@ -188,12 +221,15 @@ def run_benchmark(url, api_key, model, total_requests, concurrency, max_tokens):
 def main():
     parser = argparse.ArgumentParser(description="LLM Inference Load Benchmark")
     parser.add_argument("--url", default=os.environ.get("LITELLM_GATEWAY_URL", "http://localhost:4000/v1/chat/completions"))
-    parser.add_argument("--key", default=os.environ.get("LITELLM_MASTER_KEY", "sk-master-llm-serving-secret-key"))
+    parser.add_argument("--key", default=os.environ.get("LITELLM_MASTER_KEY", ""), help="API Key (reads from .env or LITELLM_MASTER_KEY)")
     parser.add_argument("--model", default=os.environ.get("TARGET_MODEL", "default-llm"))
     parser.add_argument("--requests", type=int, default=20, help="Total number of requests")
     parser.add_argument("--concurrency", type=int, default=4, help="Number of concurrent client workers")
     parser.add_argument("--tokens", type=int, default=100, help="Max tokens to generate per request")
     args = parser.parse_args()
+
+    if not args.key:
+        print("[!] Canh bao: Khong tim thay API Key! Vui long cung cap --key hoac dat LITELLM_MASTER_KEY trong file .env.")
 
     run_benchmark(args.url, args.key, args.model, args.requests, args.concurrency, args.tokens)
 

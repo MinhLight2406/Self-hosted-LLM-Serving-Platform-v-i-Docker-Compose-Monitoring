@@ -7,6 +7,7 @@
 [![Prometheus](https://img.shields.io/badge/Metrics-Prometheus-E6522C?logo=prometheus&logoColor=white)](https://prometheus.io/)
 [![Grafana](https://img.shields.io/badge/Dashboards-Grafana-F46800?logo=grafana&logoColor=white)](https://grafana.com/)
 [![NVIDIA DCGM](https://img.shields.io/badge/GPU%20Telemetry-NVIDIA%20DCGM-76B900?logo=nvidia&logoColor=white)](https://developer.nvidia.com/dcgm)
+[![Security Policy](https://img.shields.io/badge/Security-Hardened%20Isolated-success?logo=shield)](./SECURITY.md)
 
 Hạ tầng tự host mô hình ngôn ngữ lớn (Self-hosted Large Language Model Serving) chuẩn doanh nghiệp, tích hợp cơ chế định tuyến thông minh (Smart Gateway), tự động phục hồi sự cố (High Availability Fallback) và hệ thống giám sát thời gian thực toàn diện các chỉ số vàng (TTFT, TPOT, Throughput, VRAM).
 
@@ -14,33 +15,39 @@ Hạ tầng tự host mô hình ngôn ngữ lớn (Self-hosted Large Language Mo
 
 ---
 
+## 🛡️ Cam Kết Bảo Mật & Quyền Riêng Tư (Security & Zero-Leak Policy)
+Hệ thống được thiết kế theo tiêu chuẩn **Zero-Trust** nhằm bảo vệ tối đa API Keys và thông tin đăng nhập quản trị:
+1. **Tuyệt đối không lưu trữ Secret trong mã nguồn**: Toàn bộ API Key (`LITELLM_MASTER_KEY`), Hugging Face Token (`HF_TOKEN`) và mật khẩu quản trị (`GRAFANA_ADMIN_PASSWORD`) được cô lập trong file `.env` (được `.gitignore` bảo vệ, không bao giờ bị push lên Git).
+2. **Cô lập cổng mạng nội bộ (Network Isolation)**: Các engine suy luận thô (`vLLM:8000`, `Ollama:11434`) và hệ thống đo lường (`Prometheus:9090`, `DCGM:9400`, `cAdvisor:8080`) **chỉ lắng nghe tại `127.0.0.1`** (nội bộ máy chủ). Người ngoài Internet bắt buộc phải đi qua LiteLLM Gateway (có xác thực Bearer Token), ngăn chặn hoàn toàn nguy cơ vượt rào chiếm dụng tài nguyên GPU (GPU Hijacking).
+3. **Chi tiết chính sách bảo mật**: Xem tại [`SECURITY.md`](./SECURITY.md).
+
+---
+
 ## 🏛️ Sơ Đồ Kiến Trúc Hệ Thống (System Architecture)
 
 ```mermaid
 flowchart TD
-    subgraph Clients["Tầng Client & Ứng Dụng"]
+    subgraph Clients["Tầng Client & Ứng Dụng (Public Network)"]
         Web[Web Chat UI]
         Agent[AI Agents / LangChain]
         Bench[Benchmark / Load Test]
     end
 
-    subgraph Gateway["Tầng API Gateway & Điều Phối"]
+    subgraph PublicEndpoints["Cổng Công Khai (Public Ingress Ports)"]
         LiteLLM["LiteLLM Proxy Gateway (Port 4000)<br/>• OpenAI Compatible API<br/>• Rate Limiting & Auth<br/>• Least-Busy Routing<br/>• Auto-Fallback & Circuit Breaker"]
+        Grafana["Grafana Dashboards (Port 3000)<br/>• TTFT & TPOT Percentiles (p50/p95)<br/>• System Tokens/s<br/>• GPU Telemetry<br/>• Admin Auth Protected"]
     end
 
-    subgraph Engines["Tầng Model Serving Engines"]
-        vLLM["vLLM Engine (Port 8000)<br/>• PagedAttention & Continuous Batching<br/>• AWQ / FP8 4-bit Support<br/>• Primary GPU Serving"]
-        Ollama["Ollama Engine (Port 11434)<br/>• GGUF / llama.cpp Backend<br/>• CPU / GPU Hybrid<br/>• Secondary Fallback Serving"]
-    end
-
-    subgraph Observability["Tầng Giám Sát & Đo Lường (Observability)"]
-        Prometheus["Prometheus TSDB (Port 9090)<br/>• Scrape Interval: 5s<br/>• Metrics Aggregation"]
-        Grafana["Grafana Dashboards (Port 3000)<br/>• TTFT & TPOT Percentiles (p50/p95)<br/>• System Tokens/s<br/>• GPU Telemetry"]
-        DCGM["NVIDIA DCGM Exporter (Port 9400)<br/>• VRAM FB Used, SM Clock, Temp, Power"]
-        cAdvisor["cAdvisor (Port 8080)<br/>• Container CPU & Memory Usage"]
+    subgraph InternalIsolated["Tầng Dịch Vụ Nội Bộ (Chỉ Lắng Nghe 127.0.0.1 / Docker Network)"]
+        vLLM["vLLM Engine (127.0.0.1:8000)<br/>• PagedAttention & Continuous Batching<br/>• AWQ / FP8 4-bit Support<br/>• Primary GPU Serving"]
+        Ollama["Ollama Engine (127.0.0.1:11434)<br/>• GGUF / llama.cpp Backend<br/>• CPU / GPU Hybrid<br/>• Secondary Fallback Serving"]
+        Prometheus["Prometheus TSDB (127.0.0.1:9090)<br/>• Scrape Interval: 5s<br/>• Metrics Aggregation"]
+        DCGM["NVIDIA DCGM Exporter (127.0.0.1:9400)<br/>• VRAM FB Used, SM Clock, Temp, Power"]
+        cAdvisor["cAdvisor (127.0.0.1:8080)<br/>• Container CPU & Memory Usage"]
     end
 
     Clients -->|HTTP / SSE Streaming| LiteLLM
+    Clients -.->|Web Browser UI| Grafana
     LiteLLM -->|Primary Path| vLLM
     LiteLLM -.->|Fallback Path khi vLLM bận/lỗi| Ollama
 
@@ -70,15 +77,15 @@ flowchart TD
 
 ## 🧭 Danh Mục Cổng & Dịch Vụ (Service Registry)
 
-| Dịch vụ | Cổng Host | Endpoint Chính | Chức năng |
+| Dịch vụ | Cổng Host | Phạm vi truy cập | Chức năng |
 | :--- | :--- | :--- | :--- |
-| **LiteLLM Gateway** | `4000` | `http://localhost:4000/v1/chat/completions` | Điểm tiếp nhận request tập trung (OpenAI standard) |
-| **vLLM Engine** | `8000` | `http://localhost:8000/v1/models` | Engine suy luận GPU hiệu năng cao |
-| **Ollama Engine** | `11434`| `http://localhost:11434/api/tags` | Engine dự phòng GGUF / CPU |
-| **Prometheus** | `9090` | `http://localhost:9090` | Time-Series Database lưu trữ metrics |
-| **Grafana** | `3000` | `http://localhost:3000` (User: `admin`/ Pass: `admin`) | Giao diện trực quan hóa Dashboard |
-| **DCGM Exporter**| `9400` | `http://localhost:9400/metrics` | Xuất thông số phần cứng GPU NVIDIA |
-| **cAdvisor** | `8080` | `http://localhost:8080/containers` | Đo lường mức sử dụng CPU/RAM của container |
+| **LiteLLM Gateway** | `4000` | **Public** (Bảo vệ bằng Bearer API Key) | Điểm tiếp nhận request tập trung (OpenAI standard) |
+| **Grafana** | `3000` | **Public** (Bảo vệ bằng Admin Auth) | Giao diện trực quan hóa Dashboard giám sát |
+| **vLLM Engine** | `8000` | **127.0.0.1 (Nội bộ host)** | Engine suy luận GPU hiệu năng cao |
+| **Ollama Engine** | `11434`| **127.0.0.1 (Nội bộ host)** | Engine dự phòng GGUF / CPU |
+| **Prometheus** | `9090` | **127.0.0.1 (Nội bộ host)** | Time-Series Database lưu trữ metrics |
+| **DCGM Exporter**| `9400` | **127.0.0.1 (Nội bộ host)** | Xuất thông số phần cứng GPU NVIDIA |
+| **cAdvisor** | `8080` | **127.0.0.1 (Nội bộ host)** | Đo lường mức sử dụng CPU/RAM của container |
 
 ---
 
@@ -89,12 +96,15 @@ flowchart TD
 - **Docker**: Docker Engine 24.0+ & Docker Compose v2.
 - **GPU (Khuyến nghị)**: Card đồ họa NVIDIA (RTX 3060 12GB trở lên, RTX 3090, 4090, A100) kèm **NVIDIA Container Toolkit**. *(Nếu không có GPU, xem mục chạy CPU bên dưới).*
 
-### 2. Thiết Lập Biến Môi Trường
-Sao chép file cấu hình mẫu và chỉnh sửa nếu cần:
+### 2. Thiết Lập Biến Môi Trường Bảo Mật
+Sao chép file cấu hình mẫu sang `.env`:
 ```bash
 cp .env.example .env
 ```
-*(Nếu muốn dùng model gated của Meta Llama, hãy điền `HF_TOKEN` vào file `.env`).*
+Mở file `.env` và thiết lập các biến bảo mật của bạn:
+- `LITELLM_MASTER_KEY`: Khóa bí mật dùng để gọi API (tạo chuỗi ngẫu nhiên dài tối thiểu 32 ký tự).
+- `GRAFANA_ADMIN_PASSWORD`: Mật khẩu quản trị server Grafana của bạn.
+- `HF_TOKEN`: (Tùy chọn) Điền token nếu bạn tải các model bị gated của Meta/Google.
 
 ### 3. Khởi Động Hệ Thống
 
@@ -124,14 +134,16 @@ python scripts/healthcheck.py
 ## 🧪 Kiểm Thử & Đo Lường Hiệu Năng (Testing & Benchmarking)
 
 ### 1. Gửi Thử Nghiệm Request Suy Luận (Streaming & Non-Streaming)
+Script tự động đọc `LITELLM_MASTER_KEY` từ file `.env` của bạn:
 ```bash
-# Test qua script có sẵn:
 python scripts/test_request.py
+```
 
-# Hoặc test trực tiếp bằng cURL:
+Hoặc test trực tiếp bằng cURL:
+```bash
 curl -X POST http://localhost:4000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer sk-master-llm-serving-secret-key" \
+  -H "Authorization: Bearer <YOUR_LITELLM_MASTER_KEY_IN_ENV>" \
   -d '{
     "model": "default-llm",
     "messages": [{"role": "user", "content": "Giải thích ngắn gọn cơ chế KV Cache."}],
@@ -149,9 +161,9 @@ python scripts/benchmark_llm.py --concurrency 4 --requests 20 --tokens 100
 
 ## 📊 Truy Cập Dashboard Giám Sát (Grafana)
 1. Mở trình duyệt tại: `http://localhost:3000`
-2. Đăng nhập với tài khoản:
-   - **Tài khoản**: `admin`
-   - **Mật khẩu**: `admin` (hoặc cấu hình trong `.env`)
+2. Đăng nhập với tài khoản và mật khẩu bạn đã thiết lập trong file `.env`:
+   - **Tài khoản**: `GRAFANA_ADMIN_USER` (mặc định: `admin`)
+   - **Mật khẩu**: `GRAFANA_ADMIN_PASSWORD` (đã đặt trong `.env`)
 3. Vào mục **Dashboards** $\rightarrow$ Thư mục **LLM Platform**:
    - Xem **LLM Serving Engine - Deep Performance Overview**: Biểu đồ TTFT, TPOT, Queue Size, Tokens/s.
    - Xem **NVIDIA GPU Hardware & VRAM Telemetry**: Biểu đồ VRAM Framebuffer, Nhiệt độ, Xung nhịp SM, Điện năng tiêu thụ.
@@ -176,8 +188,9 @@ Hệ thống tài liệu học tập trong thư mục [`learning/`](./learning/R
 ```text
 .
 ├── README.md                                # Tổng quan đồ án, Architecture Diagram & Quickstart
-├── .env.example                             # File mẫu cấu hình biến môi trường
-├── .gitignore                               # Bỏ qua models, logs, cache, secrets
+├── SECURITY.md                              # Chính sách bảo mật, quản lý secrets & cô lập mạng
+├── .env.example                             # File mẫu cấu hình biến môi trường (an toàn)
+├── .gitignore                               # Bỏ qua models, logs, cache, .env, secrets
 ├── Makefile                                 # Phím tắt thao tác nhanh: make up, down, logs, test
 ├── docker-compose.yml                       # Full Stack GPU (vLLM + Ollama + LiteLLM + Monitoring)
 ├── docker-compose.cpu.yml                   # Stack CPU Fallback (Ollama + LiteLLM + Monitoring)
@@ -199,8 +212,8 @@ Hệ thống tài liệu học tập trong thư mục [`learning/`](./learning/R
 │
 ├── scripts/
 │   ├── healthcheck.py                       # Kiểm tra tính sẵn sàng của toàn bộ stack
-│   ├── benchmark_llm.py                     # Giả lập tải đa luồng đo đạc hiệu năng
-│   └── test_request.py                      # Client kiểm thử gọi prompt trực tiếp
+│   ├── benchmark_llm.py                     # Giả lập tải đa luồng đo đạc hiệu năng (an toàn token)
+│   └── test_request.py                      # Client kiểm thử gọi prompt trực tiếp (an toàn token)
 │
 └── learning/                                # HỆ THỐNG TÀI LIỆU HỌC TẬP CHUYÊN SÂU
     ├── README.md                            # Lộ trình học (Learning Roadmap)

@@ -13,7 +13,9 @@ services:
     volumes:
       - ${HF_CACHE_DIR:-./huggingface_cache}:/root/.cache/huggingface
     ports:
-      - "${VLLM_PORT:-8000}:8000"
+      # BẢO MẬT: Chỉ lắng nghe trên 127.0.0.1 để ngăn chặn truy cập trực tiếp từ Internet
+      # Mọi truy vấn từ bên ngoài bắt buộc phải đi qua LiteLLM Gateway để xác thực
+      - "127.0.0.1:${VLLM_PORT:-8000}:8000"
     command: >
       --model ${VLLM_MODEL:-Qwen/Qwen2.5-7B-Instruct-AWQ}
       --gpu-memory-utilization ${VLLM_GPU_MEMORY_UTILIZATION:-0.90}
@@ -48,7 +50,8 @@ services:
     volumes:
       - ${OLLAMA_DATA_DIR:-./ollama_data}:/root/.ollama
     ports:
-      - "${OLLAMA_PORT:-11434}:11434"
+      # BẢO MẬT: Chỉ lắng nghe trên 127.0.0.1 để tránh lộ cổng suy luận dự phòng
+      - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
     environment:
       - OLLAMA_KEEP_ALIVE=24h
       - OLLAMA_HOST=0.0.0.0
@@ -78,9 +81,11 @@ services:
     volumes:
       - ./config/litellm/config.yaml:/app/config.yaml:ro
     ports:
+      # Cổng Gateway công khai nhận request từ client (được bảo vệ bằng Master Key / Bearer Auth)
       - "${LITELLM_PORT:-4000}:4000"
     environment:
-      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-sk-master-llm-serving-secret-key}
+      # BẢO MẬT: Bắt buộc đọc từ file .env, không dùng fallback lộ secret key mặc định
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?Error: LITELLM_MASTER_KEY phai duoc thiet lap trong .env}
       - STORE_MODEL_IN_DB=False
     command: >
       --config /app/config.yaml
@@ -117,7 +122,8 @@ services:
       - '--web.console.templates=/usr/share/prometheus/consoles'
       - '--web.enable-lifecycle'
     ports:
-      - "${PROMETHEUS_PORT:-9090}:9090"
+      # BẢO MẬT: Chỉ lắng nghe trên 127.0.0.1 để tránh lộ toàn bộ số liệu hạ tầng ra ngoài
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
     networks:
       - llm-network
 
@@ -133,8 +139,9 @@ services:
       - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana_data:/var/lib/grafana
     environment:
+      # BẢO MẬT: Bắt buộc cấu hình mật khẩu quản trị admin mạnh từ file .env
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?Error: GRAFANA_ADMIN_PASSWORD phai duoc thiet lap trong .env}
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/llm-serving-overview.json
     ports:
@@ -152,7 +159,8 @@ services:
     container_name: llm-serving-dcgm-exporter
     restart: unless-stopped
     ports:
-      - "${DCGM_EXPORTER_PORT:-9400}:9400"
+      # BẢO MẬT: Chỉ lắng nghe trên 127.0.0.1 nội bộ host
+      - "127.0.0.1:${DCGM_EXPORTER_PORT:-9400}:9400"
     deploy:
       resources:
         reservations:
@@ -177,7 +185,8 @@ services:
       - /var/lib/docker/:/var/lib/docker:ro
       - /dev/disk/:/dev/disk:ro
     ports:
-      - "${CADVISOR_PORT:-8080}:8080"
+      # BẢO MẬT: Chỉ lắng nghe trên 127.0.0.1 nội bộ host
+      - "127.0.0.1:${CADVISOR_PORT:-8080}:8080"
     privileged: true
     devices:
       - /dev/kmsg
